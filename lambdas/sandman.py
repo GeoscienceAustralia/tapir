@@ -11,7 +11,7 @@ def get_metric(instance, metric):
 
     cw_client = boto3.client('cloudwatch')
     mins = 20
-    end = datetime.datetime.now().astimezone()
+    end = datetime.datetime.now()
     start = end - datetime.timedelta(minutes=mins)
 
     datapoints = cw_client.get_metric_statistics(Namespace=metric['namespace'],
