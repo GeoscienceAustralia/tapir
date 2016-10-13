@@ -6,12 +6,12 @@ import datetime
 
 def get_metric(instance, metric):
     """
-    get metric for current instance
+    Get metric for current instance
     """
 
     cw_client = boto3.client('cloudwatch')
     mins = 20
-    end = datetime.datetime.now()
+    end = datetime.datetime.now().astimezone()
     start = end - datetime.timedelta(minutes=mins)
 
     datapoints = cw_client.get_metric_statistics(Namespace=metric['namespace'],
@@ -43,6 +43,30 @@ def get_metric(instance, metric):
     return average
 
 
+def check_for_cpu_issues(curr_metric, threshold, average, asg, instance, terminated, test=False):
+    """
+    This function checks the metric against the provided average, and threshold and terminates the instance if
+    the metric is over 90, as well as over 50 above the average.
+    """
+    testmsg = 'skipping terminate as this has been flagged as a test' if test else ''
+    print('-----Average CPU for other instances sharing same autosacaling group: {0}'.format(average))
+    diff = curr_metric - average
+    print('-----diff = {0}'.format(diff))
+
+    ec2_client = boto3.client('ec2')
+
+    if curr_metric > threshold and diff >= 50 and average != 0.0:
+                print('-----{0} average of {1} is above {2}, and at least 50% higher than the average of the rest of '
+                      'it\'s autoscaling group {3}, which has an average (excluding this instance) of {4}'
+                      .format(instance, curr_metric, threshold, asg, average))
+                if not terminated:
+                    print('-----Terminating {0}...'.format(instance))
+                    ec2_client.terminate_instances(InstanceIds=[instance]) if not test else print(testmsg)
+                    return True
+    else:
+        return False
+
+
 def lambda_handler(event, context):
     """
     This lambda script is designed to find and terminate the first autoscaled instance
@@ -50,9 +74,7 @@ def lambda_handler(event, context):
     certain amount of time.
     """
 
-    # Setup variables to use throughout the script
     asg_client = boto3.client('autoscaling')
-    ec2_client = boto3.client('ec2')
     terminated = False
     terminated_instance = None
     autoscaling_groups = {}
@@ -79,20 +101,14 @@ def lambda_handler(event, context):
 
             average = (sum(other_metrics)/len(other_metrics)) if len(other_metrics) > 0 else 0.0
 
-            print('-----Average CPU for other instances sharing same autosacaling group: {0}'.format(average))
-
-            diff = curr_metric - average
-            print('-----diff = {0}'.format(diff))
-
-            if curr_metric > metric['threshold'] and diff >= 50 and average != 0.0:
-                print('-----{0} average of {1} is above {2}, and at least 50% higher than the average of the rest of '
-                      'it\'s autoscaling group {3}, which has an average (excluding this instance) of {4}'
-                      .format(instance, curr_metric, metric['threshold'], asg, average))
-                if not terminated:
-                    print('-----Terminating {0}...'.format(instance))
-                    ec2_client.terminate_instances(InstanceIds=[instance])
-                    terminated_instance = instance
-                    terminated = True
+            terminated = check_for_cpu_issues(curr_metric=curr_metric,
+                                              threshold=metric['threshold'],
+                                              average=average,
+                                              asg=asg,
+                                              instance=instance,
+                                              terminated=terminated)
+            if terminated:
+                terminated_instance = instance
 
     if not terminated:
         print('No autoscaled instances found with out of the ordinary cpu levels')
